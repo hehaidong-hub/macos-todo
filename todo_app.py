@@ -411,18 +411,36 @@ class TodoApp:
         self.root.after(ms, lambda: self.status.config(text=self._saved_status))
 
     def _set_priority(self, p):
-        """设置选中项的优先级 (0=高/1=中/2=低)。"""
+        """设置选中项的优先级 (0=高/1=中/2=低)。
+        Toggle 行为：再按同一键（高/低）会回到中，方便清除红/灰条。"""
+        names = ["高", "中", "低"]
         if not self.selected_ids:
             self._flash("先选中任务")
             return
         for tid in self.selected_ids:
             for t in self.todos:
                 if t["id"] == tid:
-                    t["priority"] = p
+                    current = t.get("priority", 1)
+                    # Toggle: 当前已经是 p (且不是中) → 回到中 (1)
+                    if current == p and p != 1:
+                        new_p = 1
+                    else:
+                        new_p = p
+                    t["priority"] = new_p
                     break
         self._sort_todos()
         self._persist()
-        self._flash(f"优先级 → {['高','中','低'][p]}")
+        # 反馈当前选中项的最终优先级（多选可能混合）
+        levels = set()
+        for tid in self.selected_ids:
+            for t in self.todos:
+                if t["id"] == tid:
+                    levels.add(t.get("priority", 1))
+                    break
+        if len(levels) == 1:
+            self._flash(f"优先级 → {names[list(levels)[0]]}")
+        else:
+            self._flash(f"优先级已设 ({len(levels)} 种)")
 
     def _set_due(self):
         """弹窗让用户输入到期日 (YYYY-MM-DD)，留空清除。"""
