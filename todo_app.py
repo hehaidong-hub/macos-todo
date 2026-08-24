@@ -92,6 +92,7 @@ class TodoApp:
         self.editing_id = None
         self.row_h = 30  # 默认值，_build() 中也会设置
 
+        self.pet_window = None  # 由 launch_main 在外部注入
         self._build()
         self._set_placeholder()
         self._refresh()
@@ -352,19 +353,18 @@ class TodoApp:
         self.root.after(ms, lambda: self.status.config(text=self._saved_status))
 
     def _collapse(self):
-        # 关闭主窗口后用子进程启动桌宠，避免同进程内连续 Tk root
-        import subprocess, sys
+        # 同进程切换：隐藏主窗口，显示宠物窗口（Toplevel）
         save_todos(self.todos)
-        self.root.destroy()
-        subprocess.Popen(
-            [sys.executable, __file__, "--pet"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        self.root.withdraw()
+        if self.pet_window is not None:
+            self.pet_window.show()
 
     # ---------- 渲染 ----------
     def _persist(self):
         save_todos(self.todos)
+        # 通知宠物窗口刷新计数（同进程直接回调，无文件 IO）
+        if getattr(self, "pet_window", None) is not None:
+            self.pet_window.refresh()
         self._refresh()
 
     def _refresh(self):
@@ -535,30 +535,38 @@ PET_W, PET_H = 240, 110
 
 
 class PetWindow:
-    """固定位置的迷你卡片，悬浮屏幕右下角，无边框、置顶。
+    """迷你卡片，悬浮屏幕右下角，无边框、置顶。
+    Toplevel 而非独立 Tk：与主窗口共享同一 Python 进程，
+    数据通过 self.app.todos 直接读取（无需重新 load_todos()）。
     双击切到完整 Todo 窗口。
     """
 
-    def __init__(self):
-        self.root = tk.Tk()
-        _hide_python_dock_icon()
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.configure(bg=BLACK)
+    def __init__(self, master, app):
+        self.master = master   # 主窗口 Tk root
+        self.app = app         # TodoApp 实例（用于读 todos）
+
+        # 用 Toplevel 而非 Tk（关键：同一进程、同一事件循环）
+        self.toplevel = tk.Toplevel(master)
+        self.toplevel.overrideredirect(True)
+        self.toplevel.attributes("-topmost", True)
+        self.toplevel.configure(bg=BLACK)
         try:
-            self.root.tk.call("tk", "scaling", 1.2)
+            self.toplevel.tk.call("tk", "scaling", 1.2)
         except tk.TclError:
             pass
 
+        # 初始隐藏（用户从 ▽ 切换时才显示）
+        self.toplevel.withdraw()
+
         # 位置：屏幕右下角
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
+        sw = self.toplevel.winfo_screenwidth()
+        sh = self.toplevel.winfo_screenheight()
         x = sw - PET_W - 24
         y = sh - PET_H - 80
-        self.root.geometry(f"{PET_W}x{PET_H}+{x}+{y}")
+        self.toplevel.geometry(f"{PET_W}x{PET_H}+{x}+{y}")
 
         self.canvas = tk.Canvas(
-            self.root, width=PET_W, height=PET_H,
+            self.toplevel, width=PET_W, height=PET_H,
             bg=BLACK, highlightthickness=0, bd=0,
         )
         self.canvas.pack()
@@ -569,7 +577,23 @@ class PetWindow:
         self.canvas.bind("<Enter>", lambda _e: self.canvas.config(cursor="hand2"))
         self.canvas.bind("<Leave>", lambda _e: self.canvas.config(cursor=""))
 
+        # 让 TodoApp 知道宠物窗口存在（用于 _persist 后回调刷新）
+        self.app.pet_window = self
+
+    def show(self):
+        """显示宠物窗口，并刷新数据。"""
         self._draw()
+        self.toplevel.deiconify()
+        self.toplevel.lift()
+
+    def hide(self):
+        """隐藏宠物窗口（不销毁）。"""
+        self.toplevel.withdraw()
+
+    def refresh(self):
+        """TodoApp 数据变更后调用，重绘宠物窗口。"""
+        if self.toplevel.winfo_viewable():
+            self._draw()
 
     def _draw(self):
         c = self.canvas
@@ -581,10 +605,11 @@ class PetWindow:
         # 顶部红条
         c.create_rectangle(2, 2, PET_W-2, 26, fill=RED, outline="")
         c.create_text(
-            10, 14, text="★  TODO  ★", anchor="w",
+            10, 14, text="\u2605  TODO  \u2605", anchor="w",
             font=("Menlo", 12, "bold"), fill=WHITE,
         )
-        todos = load_todos()
+        # 数据来源：app.todos（同一进程，直接读内存，避免 load_todos() IO）
+        todos = self.app.todos
         n_total = len(todos)
         n_done = sum(1 for t in todos if t["done"])
         remain = n_total - n_done
@@ -620,7 +645,7 @@ class PetWindow:
             c.create_rectangle(bar_x1, bar_y, bar_x1 + fill_w, bar_y + 4,
                                fill=RED, outline="")
 
-        # 小装饰：A/B 圆按钮（红）
+        # 小装饰：A/B 圆按钮
         for cx, cy in [(PET_W - 28, sy1 + 18), (PET_W - 28, sy1 + 36)]:
             c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
                           fill=RED, outline=RED_DK)
@@ -630,56 +655,44 @@ class PetWindow:
                            fill=BLACK, outline="")
         c.create_text(
             PET_W // 2, PET_H - 11,
-            text="◆ DOUBLE-CLICK TO OPEN ◆",
+            text="\u25c6 DOUBLE-CLICK TO OPEN \u25c6",
             font=("Menlo", 9, "bold"), fill=RED,
         )
 
     def _open_main(self, _e=None):
-        self.root.destroy()
-        launch_main()
+        """双击宠物：隐藏自己，显示主窗口。"""
+        self.hide()
+        self.master.deiconify()
+        self.master.lift()
+        self.master.focus_force()
 
     def _start_drag(self, e):
         self._ox, self._oy = e.x, e.y
 
     def _drag(self, e):
-        x = self.root.winfo_x() + e.x - self._ox
-        y = self.root.winfo_y() + e.y - self._oy
-        self.root.geometry(f"+{x}+{y}")
-
-    def mainloop(self):
-        self.root.mainloop()
-
-
-def launch_pet():
-    """启动宠物窗口。"""
-    try:
-        PetWindow().mainloop()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"[pet] launch_pet failed: {e}", flush=True)
+        x = self.toplevel.winfo_x() + e.x - self._ox
+        y = self.toplevel.winfo_y() + e.y - self._oy
+        self.toplevel.geometry(f"+{x}+{y}")
 
 
 def launch_main():
-    """启动完整 Todo 窗口。"""
+    """启动 Todo App（含主窗口 + 宠物窗口 Toplevel，同进程）。"""
     root = tk.Tk()
     _hide_python_dock_icon()
     try:
         root.tk.call("tk", "scaling", 1.2)
     except tk.TclError:
         pass
-    # 紧凑尺寸
     root.geometry("400x300")
     root.minsize(360, 260)
-    TodoApp(root)
+
+    app = TodoApp(root)
+    # 宠物窗口作为 Toplevel，初始隐藏（用户点 ▽ 时才显示）
+    pet = PetWindow(root, app)
+    del pet  # 已被 app.pet_window 引用，此变量不需要
+
     root.mainloop()
-    # 如果是用户主动关闭（不是点 ▽），自然退出进程
-    # 点 ▽ 时 _collapse 已自己启动 PetWindow 子进程
 
 
 if __name__ == "__main__":
-    import sys
-    if "--pet" in sys.argv:
-        launch_pet()
-    else:
-        launch_main()
+    launch_main()
