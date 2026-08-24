@@ -94,11 +94,6 @@ class TodoApp:
 
         self.pet_window = None  # 由 launch_main 在外部注入
 
-        # 数据迁移：老 todo 补默认字段（priority=1, due=None, tags=[]）
-        for t in self.todos:
-            t.setdefault("priority", 1)
-            t.setdefault("due", None)
-            t.setdefault("tags", [])
 
         self._build()
         self._set_placeholder()
@@ -286,10 +281,7 @@ class TodoApp:
         self.root.bind("<Control-Down>",lambda _e: self.move(1))
         self.root.bind("<Command-Up>",  lambda _e: self.move(-1))
         self.root.bind("<Command-Down>",lambda _e: self.move(1))
-        # 优先级 / 到期日快捷键
-        # 用 bind_all('<KeyPress>') + 手动判 modifier，比 <Command-1> 在 macOS Tk 上稳
-        # （<Command-数字> 写法在 Tk 上偶尔被 Entry 拦截或不触发）
-        self.root.bind_all("<KeyPress>", self._on_key_press)
+
 
     # ---------- placeholder ----------
     def _set_placeholder(self, _e=None):
@@ -304,64 +296,17 @@ class TodoApp:
 
     # ---------- 数据操作 ----------
     def add(self):
-        raw = self.entry_var.get().strip()
-        if not raw or raw == PLACEHOLDER:
+        title = self.entry_var.get().strip()
+        if not title or title == PLACEHOLDER:
             return
-
-        # 解析 inline 元数据语法: p=N d=YYYY-MM-DD t=tag1,tag2
-        # 例如: "九州通 p=0 d=2026-08-30 t=PR稿"
-        import re
-        priority = 1  # 默认 medium
-        due = None
-        tags = []
-
-        p_match = re.search(r"\bp=([012])\b", raw)
-        if p_match:
-            priority = int(p_match.group(1))
-            raw = re.sub(r"\bp=[012]\b", "", raw, count=1).strip()
-
-        d_match = re.search(r"\bd=(\d{4}-\d{2}-\d{2})\b", raw)
-        if d_match:
-            due = d_match.group(1)
-            raw = re.sub(r"\bd=\d{4}-\d{2}-\d{2}\b", "", raw, count=1).strip()
-
-        t_match = re.search(r"\bt=([^\s]+(?:\s[^=][^\s]*)*)", raw)
-        if t_match:
-            tag_str = t_match.group(1)
-            tags = [t.strip() for t in tag_str.split(",") if t.strip()]
-            raw = raw.replace(t_match.group(0), "", 1).strip()
-
-        title = raw.replace("  ", " ").strip()
-        if not title:
-            return
-
         self.todos.insert(0, {
             "id": int(datetime.now().timestamp() * 1000),
-            "title": title,
-            "done": False,
-            "priority": priority,
-            "due": due,
-            "tags": tags,
+            "title": title, "done": False,
             "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
         })
         self.entry_var.set("")
-        self._sort_todos()
         self._persist()
         self.entry.focus_set()
-
-    def _sort_todos(self):
-        """按 priority → due → created 排序。"""
-        def key(t):
-            pr = t.get("priority", 1)
-            due = t.get("due") or "9999-99-99"  # 无 due 排最后
-            created = t.get("created", "9999")
-            return (pr, due, created)
-        # 未完成在上、已完成移到尾部
-        not_done = [t for t in self.todos if not t["done"]]
-        done = [t for t in self.todos if t["done"]]
-        not_done.sort(key=key)
-        done.sort(key=key)
-        self.todos = not_done + done
 
     def toggle_done(self):
         if not self.selected_ids:
@@ -410,74 +355,6 @@ class TodoApp:
         self.status.config(text=text)
         self.root.after(ms, lambda: self.status.config(text=self._saved_status))
 
-    def _set_priority(self, p):
-        """设置选中项的优先级 (0=高/1=中/2=低)。"""
-        if not self.selected_ids:
-            self._flash("先选中任务")
-            return
-        for tid in self.selected_ids:
-            for t in self.todos:
-                if t["id"] == tid:
-                    t["priority"] = p
-                    break
-        self._sort_todos()
-        self._persist()
-        self._flash(f"优先级 → {['高','中','低'][p]}")
-
-    def _set_due(self):
-        """弹窗让用户输入到期日 (YYYY-MM-DD)，留空清除。"""
-        if not self.selected_ids:
-            self._flash("先选中任务")
-            return
-        from tkinter import simpledialog
-        current = ""
-        for tid in self.selected_ids:
-            for t in self.todos:
-                if t["id"] == tid:
-                    current = t.get("due") or ""
-                    break
-            if current: break
-        s = simpledialog.askstring(
-            "到期日", "YYYY-MM-DD (留空清除):",
-            initialvalue=current, parent=self.root,
-        )
-        if s is None:
-            return
-        s = s.strip()
-        import re as _re
-        if s and not _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-            self._flash("格式：YYYY-MM-DD")
-            return
-        for tid in self.selected_ids:
-            for t in self.todos:
-                if t["id"] == tid:
-                    t["due"] = s if s else None
-                    break
-        self._sort_todos()
-        self._persist()
-        self._flash("已设到期" if s else "已清除到期")
-
-    def _on_key_press(self, event):
-        """App 级键盘事件：⌘1/⌘2/⌘3 = 优先级，⌘D = 到期日。
-        用 bind_all + 手动判 modifier 比 <Command-N> 写法在 macOS Tk 上稳。
-        返回 'break' 表示消费该事件，None 表示让默认行为继续。"""
-        # Cmd modifier 在 macOS Tk 上 mask = 0x10（0x8 是 Alt/Option，不是 Cmd）
-        if not (event.state & 0x10):
-            return None
-        key = event.keysym.lower()
-        if key == "1":
-            self._set_priority(0)
-            return "break"
-        if key == "2":
-            self._set_priority(1)
-            return "break"
-        if key == "3":
-            self._set_priority(2)
-            return "break"
-        if key == "d":
-            self._set_due()
-            return "break"
-        return None
 
     def _collapse(self):
         # 同进程切换：隐藏主窗口，显示宠物窗口（Toplevel）
@@ -517,15 +394,8 @@ class TodoApp:
             elif idx % 2 == 1:
                 c.create_rectangle(0, y0, w, y1, fill=LINE, outline="")
 
-            # —— 优先级条（左侧 3px 宽竖条）——
-            pr = t.get("priority", 1)
-            if pr == 0:    # 红色 = 高优先级
-                c.create_rectangle(0, y0, 3, y1, fill=RED, outline="")
-            elif pr == 2:  # 灰 = 低优先级
-                c.create_rectangle(0, y0, 3, y1, fill=DIM, outline="")
-
-            # 复选框（像素方框）—— 右移 6px 给 priority 条留位
-            bx = 18
+            # 复选框（像素方框）
+            bx = 12
             by = y0 + (self.row_h - 16) / 2
             if t["done"]:
                 c.create_rectangle(bx, by, bx+16, by+16,
@@ -537,46 +407,16 @@ class TodoApp:
                 c.create_rectangle(bx, by, bx+16, by+16,
                                    fill=PANEL, outline=DIM)
 
-            # 文字
+            # 文字（占满整行右侧空间）
             color = DIM if t["done"] else WHITE
             title = t["title"]
-
-            # —— 右侧 due 日期 ——
-            due = t.get("due")
-            due_text = ""
-            due_color = None
-            if due and len(due) == 10:
-                # YYYY-MM-DD → MM/DD 紧凑显示
-                mm, dd = due[5:7], due[8:10]
-                # 去掉前导 0
-                mm_l = mm.lstrip("0") or "0"
-                dd_l = dd.lstrip("0") or "0"
-                due_text = f"· {mm_l}/{dd_l}"
-                today = datetime.now().strftime("%Y-%m-%d")
-                if due < today:
-                    due_color = RED_DK  # 已过期
-                elif due == today:
-                    due_color = RED     # 今天到期
-                else:
-                    due_color = DIM     # 未来
-                # 已完成项的 due 文字用 DIM
-                if t["done"]:
-                    due_color = DIM
-
-            # 估算 title 截断长度（要给 due 留 ~48px 空间）
-            due_w = 48 if due_text else 0
-            max_chars = max(5, (w - bx - 26 - 12 - due_w) // 8)
+            # 估算字符宽度（Menlo 13pt 约 8px/字符），过长则截断
+            max_chars = max(5, (w - bx - 26 - 12) // 8)
             if len(title) > max_chars:
                 title = title[:max_chars-1] + "…"
             tx = bx + 26
             c.create_text(tx, (y0+y1)//2, text=title,
                           anchor="w", fill=color, font=FONT)
-
-            # due 日期文字（右对齐到行尾）
-            if due_text:
-                dx = w - 8
-                c.create_text(dx, (y0+y1)//2, text=due_text,
-                              anchor="e", fill=due_color, font=FONT_SM)
 
             # 行下划线
             c.create_line(0, y1, w, y1, fill=LINE)
