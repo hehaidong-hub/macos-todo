@@ -1,0 +1,30 @@
+# — macOS —
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# — Python —
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# — 图标产物（可由 icon.png 重新生成）—
+Todo.iconset/
+Todo.icns
+
+# — App bundle 内部自动产物 —
+# _CodeSignature 是 codesign 自动生成的；签名前不需要入库
+Todo.app/Contents/_CodeSignature/
+
+# — 运行时 JSON 损坏备份（load_todos 自动产生）—
+todos.json.bak.*
+
+# — 编辑器 / IDE —
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
