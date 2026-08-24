@@ -426,6 +426,26 @@ class TodoApp:
 
         c.configure(scrollregion=(0, 0, w, max(y, c.winfo_height())))
 
+        # 窗口 resize 后：如果正在编辑某行，同步 Entry 的 place 位置
+        # 否则 Entry 还停在旧的 Y 上，会和重绘后的行错位
+        if getattr(self, "editing_id", None) is not None and getattr(self, "edit", None):
+            self._refresh_edit_position()
+
+    def _refresh_edit_position(self):
+        """正在编辑时，窗口 resize 后把 Entry 移到新 Y。"""
+        for tid, y0, _y1 in self._row_y:
+            if tid == self.editing_id:
+                try:
+                    w = self.canvas.winfo_width()
+                    self.edit.place(
+                        x=38, y=y0 + 4,
+                        width=max(100, w - 38 - 110),
+                        height=self.row_h - 8,
+                    )
+                except tk.TclError:
+                    pass
+                break
+
     # ---------- 事件 ----------
     def _hit(self, y):
         for tid, y0, y1 in self._row_y:
