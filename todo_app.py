@@ -286,12 +286,10 @@ class TodoApp:
         self.root.bind("<Control-Down>",lambda _e: self.move(1))
         self.root.bind("<Command-Up>",  lambda _e: self.move(-1))
         self.root.bind("<Command-Down>",lambda _e: self.move(1))
-        # 优先级：⌘1=高 / ⌘2=中 / ⌘3=低
-        self.root.bind("<Command-1>", lambda _e: self._set_priority(0))
-        self.root.bind("<Command-2>", lambda _e: self._set_priority(1))
-        self.root.bind("<Command-3>", lambda _e: self._set_priority(2))
-        # ⌘D 设到期日
-        self.root.bind("<Command-d>", lambda _e: self._set_due())
+        # 优先级 / 到期日快捷键
+        # 用 bind_all('<KeyPress>') + 手动判 modifier，比 <Command-1> 在 macOS Tk 上稳
+        # （<Command-数字> 写法在 Tk 上偶尔被 Entry 拦截或不触发）
+        self.root.bind_all("<KeyPress>", self._on_key_press)
 
     # ---------- placeholder ----------
     def _set_placeholder(self, _e=None):
@@ -459,6 +457,28 @@ class TodoApp:
         self._persist()
         self._flash("已设到期" if s else "已清除到期")
 
+    def _on_key_press(self, event):
+        """App 级键盘事件：⌘1/⌘2/⌘3 = 优先级，⌘D = 到期日。
+        用 bind_all + 手动判 modifier 比 <Command-N> 写法在 macOS Tk 上稳。
+        返回 'break' 表示消费该事件，None 表示让默认行为继续。"""
+        # Cmd modifier 在 macOS Tk 上 mask = 0x10（0x8 是 Alt/Option，不是 Cmd）
+        if not (event.state & 0x10):
+            return None
+        key = event.keysym.lower()
+        if key == "1":
+            self._set_priority(0)
+            return "break"
+        if key == "2":
+            self._set_priority(1)
+            return "break"
+        if key == "3":
+            self._set_priority(2)
+            return "break"
+        if key == "d":
+            self._set_due()
+            return "break"
+        return None
+
     def _collapse(self):
         # 同进程切换：隐藏主窗口，显示宠物窗口（Toplevel）
         save_todos(self.todos)
@@ -585,7 +605,7 @@ class TodoApp:
             self.toggle_done()
             return
         # 普通点击：单选 / ⌘+点击 多选
-        mods = e.state & 0x9  # Shift(0x1) + Cmd(0x8) 都进入多选
+        mods = e.state & 0x11  # Shift(0x1) + Cmd(0x10) 都进入多选（macOS Tk）
         if mods:
             if tid in self.selected_ids:
                 self.selected_ids.discard(tid)
