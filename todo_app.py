@@ -281,6 +281,9 @@ class TodoApp:
         self.root.bind("<Control-Down>",lambda _e: self.move(1))
         self.root.bind("<Command-Up>",  lambda _e: self.move(-1))
         self.root.bind("<Command-Down>",lambda _e: self.move(1))
+        # ⌘Z 撤销（用 <Command-z>，Tk 原生稳定，比数字键稳）
+        self.root.bind("<Command-z>", lambda _e: self._undo())
+        self.root.bind("<Command-Z>", lambda _e: self._undo())
 
 
     # ---------- placeholder ----------
@@ -325,15 +328,23 @@ class TodoApp:
     def delete_selected(self):
         if not self.selected_ids:
             return
+        # 记录要删的项（含原位置），用于撤销
+        removed = [(i, t) for i, t in enumerate(self.todos) if t["id"] in self.selected_ids]
+        if removed:
+            self._push_undo(("delete", removed))
         self.todos = [t for t in self.todos if t["id"] not in self.selected_ids]
         self.selected_ids.clear()
         self._persist()
+        self._flash(f"已删除 {len(removed)} 项 · ⌘Z 撤销")
 
     def clear_done(self):
         before = len(self.todos)
+        removed = [(i, t) for i, t in enumerate(self.todos) if t["done"]]
         self.todos = [t for t in self.todos if not t["done"]]
         if len(self.todos) != before:
+            self._push_undo(("clear_done", removed))
             self._persist()
+            self._flash(f"已清 {len(removed)} 项 · ⌘Z 撤销")
         else:
             self._flash("没有已完成项。")
 
@@ -354,6 +365,38 @@ class TodoApp:
         self._saved_status = self.status.cget("text")
         self.status.config(text=text)
         self.root.after(ms, lambda: self.status.config(text=self._saved_status))
+
+    def _push_undo(self, action):
+        """记一步撤销。action = (kind, items)，items = [(idx, todo_dict), ...]"""
+        self.undo_stack.append(action)
+        if len(self.undo_stack) > self._undo_max:
+            self.undo_stack.pop(0)
+
+    def _undo(self):
+        """⌘Z：撤销最近一步破坏性操作。"""
+        if not self.undo_stack:
+            self._flash("无可撤销")
+            return
+        kind, items = self.undo_stack.pop()
+        if kind == "delete":
+            # 把删掉的项按原索引插回去（从大到小插，避免互相挤位）
+            for idx, todo in sorted(items, key=lambda x: -x[0]):
+                todo = dict(todo)  # 深拷贝，避免引用旧对象
+                if idx >= len(self.todos):
+                    self.todos.append(todo)
+                else:
+                    self.todos.insert(idx, todo)
+        elif kind == "clear_done":
+            # 把清掉的完成项恢复（done 仍为 True）
+            for idx, todo in sorted(items, key=lambda x: -x[0]):
+                todo = dict(todo)
+                todo["done"] = True
+                if idx >= len(self.todos):
+                    self.todos.append(todo)
+                else:
+                    self.todos.insert(idx, todo)
+        self._persist()
+        self._flash(f"已撤销 {'删除' if kind == 'delete' else '清完成'} ({len(items)} 项)")
 
 
     def _collapse(self):
